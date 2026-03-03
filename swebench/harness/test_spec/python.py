@@ -250,6 +250,12 @@ def get_test_directives(instance: SWEbenchInstance) -> list:
 
     # For Django tests, remove extension + "tests/" prefix and convert slashes to dots (module referencing)
     if instance["repo"] == "django/django":
+        # If all test patch files were non-.py (e.g. .txt), derive module from parent directory
+        if not directives:
+            all_paths = re.findall(diff_pat, test_patch)
+            directives = list(set(
+                posixpath.dirname(d) for d in all_paths if d.startswith("tests/")
+            ))
         directives_transformed = []
         for d in directives:
             d = d[: -len(".py")] if d.endswith(".py") else d

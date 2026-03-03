@@ -25,7 +25,7 @@ def main(instance_ids, predictions_path):
 
     for instance_id in all_ids:
         try:
-            client = docker.from_env()
+            client = docker.from_env(timeout=1200)
             container = client.containers.get(f"sweb.eval.{instance_id}")
             container.stop()
             container.remove()
