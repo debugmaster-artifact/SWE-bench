@@ -19,7 +19,6 @@ SUBSET_TO_DATASET = {
     "verified": "SWE-bench/SWE-bench_Verified",
     "lite": "SWE-bench/SWE-bench_Lite",
     "full": "SWE-bench/SWE-bench",
-    "pro": "ScaleAI/SWE-bench_Pro",
 }
 
 # Simplified test commands — strip verbose/summary flags, focus on failures only.
@@ -33,12 +32,17 @@ _TEST_CMD_OVERRIDES = {
     "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1": "./tests/runtests.py --parallel 1",
     "./tests/runtests.py --verbosity 2": "./tests/runtests.py",
     "pytest --no-header -rA": "pytest -q --tb=short --no-header",
-    "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose": "bin/test",
+    "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose": "bin/test -C --no-subprocess",
 }
 
-OUTPUT_PATH = Path(
-    "/home/ruixinw/debugmaster_artifact/aclarr_experiments/swebench-test-cmd-format"
-)
+# Instances where the full test file hangs or times out but individual
+# FAIL_TO_PASS tests run fine.  For these, use the FAIL_TO_PASS nodeids
+# directly as failing_test_directives instead of the whole file.
+_USE_FAIL_TO_PASS_AS_DIRECTIVES = [
+    "psf__requests-2317",
+]
+
+OUTPUT_PATH = Path(__file__).resolve().parents[4] / "assets" / "swebench-test-specs" / "verified.json"
 
 
 def _test_cmd_format(test_cmd) -> str:
@@ -65,79 +69,35 @@ def _computed_test_commands(instance):
     return commands
 
 
-def resolve_dataset_names(
-    dataset_names: list[str] | None, subsets: list[str] | None
-) -> list[str]:
-    """Return a list of HuggingFace dataset paths from CLI args.
+def _extract_directives(test_cmd: str, full_failing) -> str | list[str] | None:
+    """Extract test directives by stripping test_cmd from full_failing_test_cmd.
 
-    Accepts multiple ``--dataset_name`` and/or ``--subset`` values so that
-    Verified + Pro (or any combination) can be processed in one invocation.
+    Returns the pure test file paths / test labels with test_cmd removed.
     """
-    resolved: list[str] = []
-    for name in dataset_names or []:
-        resolved.append(name)
-    for subset in subsets or []:
-        key = subset.lower()
-        if key not in SUBSET_TO_DATASET:
-            raise ValueError(
-                f"Unsupported subset '{subset}'. Choose from: {', '.join(sorted(SUBSET_TO_DATASET.keys()))}"
-            )
-        resolved.append(SUBSET_TO_DATASET[key])
-    if not resolved:
-        resolved.append(SUBSET_TO_DATASET["verified"])
-    return resolved
+    if full_failing is None:
+        return None
 
+    def _strip_one(cmd: str) -> str:
+        if cmd.startswith(test_cmd):
+            return cmd[len(test_cmd):].strip()
+        # Handle test_cmd with shell suffixes (e.g. "pytest -q || echo ...")
+        # where files are inserted before the suffix.
+        for sep in (" || ", " && ", " ; "):
+            if sep in test_cmd:
+                base, suffix = test_cmd.split(sep, 1)
+                tail = sep + suffix
+                if cmd.startswith(base) and cmd.endswith(tail):
+                    return cmd[len(base):len(cmd) - len(tail)].strip()
+        return cmd
 
-def _sanitize_dataset_name(name: str) -> str:
-    return name.rsplit("/", 1)[-1]
-
-
-def _is_pro_dataset(dataset_path: str) -> bool:
-    return "pro" in dataset_path.lower()
-
-
-def _process_pro_instance(instance) -> dict:
-    """Derive test command info for a SWE-bench Pro instance."""
-    import ast
-
-    instance_id = instance[KEY_INSTANCE_ID]
-    repo = instance["repo"]
-
-    selected_raw = instance.get("selected_test_files_to_run", "[]")
-    try:
-        selected = ast.literal_eval(selected_raw) if isinstance(selected_raw, str) else selected_raw
-    except Exception:
-        selected = []
-
-    fail_raw = instance.get("fail_to_pass", "[]")
-    try:
-        fail_to_pass = ast.literal_eval(fail_raw) if isinstance(fail_raw, str) else fail_raw
-    except Exception:
-        fail_to_pass = []
-
-    test_cmd = "pytest -q --tb=short"
-    if selected:
-        # Strip ::test_case suffixes to get file paths only.
-        files = sorted({s.split("::")[0] for s in selected})
-        full_failing = f"{test_cmd} {' '.join(files)}"
-    elif fail_to_pass:
-        files = sorted({f.split("::")[0] for f in fail_to_pass})
-        full_failing = f"{test_cmd} {' '.join(files)}"
-    else:
-        full_failing = None
-
-    return {
-        "instance_id": instance_id,
-        "repo": repo,
-        "version": None,
-        "test_cmd_format": "string",
-        "test_cmd": test_cmd,
-        "full_failing_test_cmd": full_failing,
-    }
+    if isinstance(full_failing, str):
+        return _strip_one(full_failing)
+    elif isinstance(full_failing, list):
+        return [_strip_one(cmd) for cmd in full_failing]
+    return full_failing
 
 
 def _process_standard_instance(instance) -> dict:
-    """Process a standard SWE-bench instance (Verified / Lite / Full)."""
     instance_id = instance[KEY_INSTANCE_ID]
     repo = instance["repo"]
     version = instance.get("version")
@@ -150,7 +110,8 @@ def _process_standard_instance(instance) -> dict:
             "version": version,
             "test_cmd_format": "missing",
             "test_cmd": None,
-            "full_failing_test_cmd": None,
+            "failing_test_directives": None,
+            "env": {},
         }
 
     original_test_cmd = spec["test_cmd"]
@@ -165,61 +126,38 @@ def _process_standard_instance(instance) -> dict:
         elif isinstance(full_failing, list):
             full_failing = [cmd.replace(original_test_cmd, test_cmd, 1) for cmd in full_failing]
 
+    if instance_id in _USE_FAIL_TO_PASS_AS_DIRECTIVES:
+        fail_to_pass = json.loads(instance.get("FAIL_TO_PASS", "[]"))
+        directives = " ".join(fail_to_pass)
+    else:
+        directives = _extract_directives(test_cmd, full_failing)
+
     return {
         "instance_id": instance_id,
         "repo": repo,
         "version": version,
         "test_cmd_format": _test_cmd_format(test_cmd),
         "test_cmd": test_cmd,
-        "full_failing_test_cmd": full_failing,
+        "failing_test_directives": directives,
+        "env": {},
     }
 
 
 def main(
-    dataset_names: list[str] | None,
-    subsets: list[str] | None,
+    subset: str,
     split: str,
     output: str | None = None,
-    language: str | None = None,
 ) -> Path:
-    resolved_datasets = resolve_dataset_names(dataset_names, subsets)
+    dataset_path = SUBSET_TO_DATASET.get(subset, subset)
+    print(f"Loading {dataset_path} split={split} ...")
+    dataset = load_swebench_dataset(dataset_path, split)
 
-    results: dict[str, dict] = {}
+    results = {instance[KEY_INSTANCE_ID]: _process_standard_instance(instance) for instance in dataset}
 
-    for dataset_path in resolved_datasets:
-        print(f"Loading {dataset_path} split={split} ...")
-        dataset = load_swebench_dataset(dataset_path, split)
-        is_pro = _is_pro_dataset(dataset_path)
-        skipped = 0
-
-        for instance in dataset:
-            if language and "repo_language" in instance and instance["repo_language"].lower() != language.lower():
-                skipped += 1
-                continue
-            instance_id = instance[KEY_INSTANCE_ID]
-            if is_pro:
-                version = instance.get("version")
-                spec = MAP_REPO_VERSION_TO_SPECS.get(instance["repo"], {}).get(version) if version else None
-                if spec is None or "test_cmd" not in spec:
-                    results[instance_id] = _process_pro_instance(instance)
-                    continue
-            results[instance_id] = _process_standard_instance(instance)
-
-        kept = len(dataset) - skipped
-        msg = f"  -> {kept}/{len(dataset)} instances from {dataset_path}"
-        if skipped:
-            msg += f" ({skipped} skipped by --language {language})"
-        print(msg)
-
-    if output:
-        output_path = Path(output)
-    else:
-        tag = "+".join(_sanitize_dataset_name(d) for d in resolved_datasets)
-        output_path = OUTPUT_PATH / f"{tag}-{split}.json"
-
+    output_path = Path(output) if output else OUTPUT_PATH
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(results, indent=2))
-    print(f"Wrote {len(results)} total records to {output_path}")
+    print(f"Wrote {len(results)} records to {output_path}")
     return output_path
 
 
@@ -228,37 +166,17 @@ if __name__ == "__main__":
         description="Export dev test commands for each SWE-bench instance."
     )
     parser.add_argument(
-        "--dataset_name",
-        type=str,
-        nargs="*",
-        default=None,
-        help="One or more HF dataset paths (e.g. SWE-bench/SWE-bench_Verified ScaleAI/SWE-bench_Pro).",
-    )
-    parser.add_argument(
         "--subset",
         type=str,
-        nargs="*",
-        default=None,
-        help="One or more subset shortcuts: verified, lite, full, pro.  E.g. --subset verified pro",
+        default="verified",
+        help="Subset: verified, lite, full, or a HF dataset path.",
     )
     parser.add_argument("--split", type=str, default="test", help="Dataset split")
-    parser.add_argument(
-        "--language",
-        type=str,
-        default=None,
-        help="Filter instances by repo_language (e.g. python, go, js). Only applies to datasets that have this field.",
-    )
     parser.add_argument(
         "-o", "--output",
         type=str,
         default=None,
-        help="Output file path. Defaults to auto-generated name under OUTPUT_PATH.",
+        help=f"Output file path. Defaults to {OUTPUT_PATH}.",
     )
     args = parser.parse_args()
-    main(
-        dataset_names=args.dataset_name,
-        subsets=args.subset,
-        split=args.split,
-        output=args.output,
-        language=args.language,
-    )
+    main(subset=args.subset, split=args.split, output=args.output)
