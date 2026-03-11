@@ -23,15 +23,15 @@ SUBSET_TO_DATASET = {
 
 # Simplified test commands — strip verbose/summary flags, focus on failures only.
 _TEST_CMD_OVERRIDES = {
-    "pytest --no-header -rA --tb=no -p no:cacheprovider": "pytest -q --tb=short",
-    "pytest -rA --tb=long -p no:cacheprovider": "pytest -q --tb=short",
-    "pytest -rA": "pytest -q --tb=short",
-    "pytest -rA --tb=long": "pytest -q --tb=short",
-    "pytest -rA -vv -o console_output_style=classic --tb=no": "pytest -q --tb=short",
-    "tox --current-env -epy39 -v --": "pytest -q --tb=short",
+    "pytest --no-header -rA --tb=no -p no:cacheprovider": "pytest --disable-warnings --runxfail -q --tb=short",
+    "pytest -rA --tb=long -p no:cacheprovider": "pytest --disable-warnings --runxfail -q --tb=short",
+    "pytest -rA": "pytest --disable-warnings --runxfail -q --tb=short",
+    "pytest -rA --tb=long": "pytest --disable-warnings --runxfail -q --tb=short",
+    "pytest -rA -vv -o console_output_style=classic --tb=no": "pytest --disable-warnings --runxfail -q --tb=short",
+    "tox --current-env -epy39 -v --": "pytest --disable-warnings --runxfail -q --tb=short",
     "./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1": "./tests/runtests.py --parallel 1",
     "./tests/runtests.py --verbosity 2": "./tests/runtests.py",
-    "pytest --no-header -rA": "pytest -q --tb=short --no-header",
+    "pytest --no-header -rA": "pytest --disable-warnings --runxfail -q --tb=short --no-header",
     "PYTHONWARNINGS='ignore::UserWarning,ignore::SyntaxWarning' bin/test -C --verbose": "bin/test -C --no-subprocess",
 }
 
